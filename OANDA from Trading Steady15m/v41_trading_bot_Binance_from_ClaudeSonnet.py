@@ -35,6 +35,12 @@ TP_RATIO = 1.5                  # Ratio Take Profit / Stop Loss
 ENABLE_EMA_CROSSOVER = False     # Stratégie EMA 5/8 crossover
 ENABLE_CHOCH = True            # Stratégie CHoCH Smart Money
 
+# Filtre EMA Trend Cloud (Pine Script EMA Trend 50 200 280)
+ENABLE_EMA_TREND_CLOUD = False   # Filtre optionnel EMA Trend Cloud
+EMA_TREND_FAST = 50              # EMA rapide (Fast)
+EMA_TREND_MEDIUM = 200           # EMA moyenne (Medium)
+EMA_TREND_SLOW = 280             # EMA lente (Slow)
+
 # Paramètres CHoCH (optimisés pour M1)
 CHOCH_SWING_SIZE = 12           # Structure principale (pivots majeurs de la trendline)
 CHOCH_MICRO_SWING = 3           # Micro-structure (petit HL/LH avant cassure)
@@ -65,6 +71,7 @@ trade_log = pd.DataFrame(columns=[
     'signal', 'entry_price', 'sl', 'tp', 'quantity_btc',
     'buy_win', 'buy_loss', 'sell_win', 'sell_loss',
     'choch_bull', 'choch_bear', 'bos_a', 'choch_a',
+    'cloud_up', 'cloud_dw',
     'timestamp_close', 'exit_price', 'pnl_usdc', 'pnl_percent',
     'duration_minutes', 'status', 'ema_5', 'ema_8', 'ema_30', 'atr_14', 'fees_usdc', 'notes'
 ])
@@ -116,6 +123,7 @@ def init_log_file():
             'signal', 'entry_price', 'sl', 'tp', 'quantity_btc',
             'buy_win', 'buy_loss', 'sell_win', 'sell_loss',
             'choch_bull', 'choch_bear', 'bos_a', 'choch_a',
+            'cloud_up', 'cloud_dw',
             'timestamp_close', 'exit_price', 'pnl_usdc', 'pnl_percent',
             'duration_minutes', 'status', 'ema_5', 'ema_8', 'ema_30', 'atr_14', 'fees_usdc', 'notes'
         ]
@@ -123,7 +131,7 @@ def init_log_file():
         # Ajouter les colonnes manquantes avec valeurs par défaut
         for col in required_columns:
             if col not in loaded_log.columns:
-                if col in ['bos_a', 'choch_a', 'choch_bull', 'choch_bear', 'day_of_week_number', 'hour', 'minute', 'second', 'week_number', 'month', 'is_weekend']:
+                if col in ['bos_a', 'choch_a', 'choch_bull', 'choch_bear', 'cloud_up', 'cloud_dw', 'day_of_week_number', 'hour', 'minute', 'second', 'week_number', 'month', 'is_weekend']:
                     loaded_log[col] = 0
                 else:
                     loaded_log[col] = None
@@ -134,10 +142,11 @@ def init_log_file():
         trade_log.to_csv(log_file, index=False)
 
 
-def add_trade_entry(timestamp, signal, entry, sl, tp, qty, ema5, ema8, ema30, atr, choch_bull=0, choch_bear=0, bos_a=0, choch_a=0, notes=""):
+def add_trade_entry(timestamp, signal, entry, sl, tp, qty, ema5, ema8, ema30, atr, choch_bull=0, choch_bear=0, bos_a=0, choch_a=0, cloud_up=0, cloud_dw=0, notes=""):
     """
     Ajoute un nouveau trade au log avec status OPEN
     Inclut les distances CHoCH/BOS et indicateurs BOS_A/CHoCH_A
+    Inclut cloud_up et cloud_dw pour le filtre EMA Trend Cloud
     """
     global trade_log
 
@@ -156,6 +165,8 @@ def add_trade_entry(timestamp, signal, entry, sl, tp, qty, ema5, ema8, ema30, at
         'choch_bear': choch_bear,
         'bos_a': bos_a,
         'choch_a': choch_a,
+        'cloud_up': cloud_up,
+        'cloud_dw': cloud_dw,
         'timestamp_close': None,
         'exit_price': None,
         'pnl_usdc': None,
@@ -381,11 +392,17 @@ def get_candles():
 def calculate_indicators(df):
     """
     Calcule les indicateurs techniques
+    Inclut EMA Trend Cloud (EMA 50, 200, 280)
     """
     df['EMA_5'] = ta.ema(df['close'], length=5)
     df['EMA_8'] = ta.ema(df['close'], length=8)
     df['EMA_30'] = ta.ema(df['close'], length=30)  # EMA 30 pour stratégie Trader DNA
     df['ATR_14'] = ta.atr(df['high'], df['low'], df['close'], length=14)
+
+    # EMA Trend Cloud (Pine Script: EMA Trend 50 200 280)
+    df['EMA_50'] = ta.ema(df['close'], length=EMA_TREND_FAST)
+    df['EMA_200'] = ta.ema(df['close'], length=EMA_TREND_MEDIUM)
+    df['EMA_280'] = ta.ema(df['close'], length=EMA_TREND_SLOW)
 
     return df
 
@@ -542,7 +559,7 @@ def detect_choch(df, swing_size=12, micro_swing=3, search_window=25, conf_type='
     return bull_distance, bear_distance, is_choch_bull, is_choch_bear, is_quality_bull, is_quality_bear
 
 
-def place_buy_order(entry_price, sl_price, tp_price, ema5, ema8, ema30, atr, choch_bull=0, choch_bear=0, bos_a=0, choch_a=0, strategy_note="BUY - Strategy"):
+def place_buy_order(entry_price, sl_price, tp_price, ema5, ema8, ema30, atr, choch_bull=0, choch_bear=0, bos_a=0, choch_a=0, cloud_up=0, cloud_dw=0, strategy_note="BUY - Strategy"):
     """
     Place un ordre BUY simple
     Logger AVANT l'ordre pour capturer même les échecs
@@ -561,7 +578,7 @@ def place_buy_order(entry_price, sl_price, tp_price, ema5, ema8, ema30, atr, cho
         # LOGGER AVANT l'ordre (pour capturer même si échec)
         current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         add_trade_entry(current_time, "BUY", entry_price, sl_price, tp_price,
-                       float(quantity_str), ema5, ema8, ema30, atr, choch_bull, choch_bear, bos_a, choch_a, strategy_note)
+                       float(quantity_str), ema5, ema8, ema30, atr, choch_bull, choch_bear, bos_a, choch_a, cloud_up, cloud_dw, strategy_note)
 
         # Ordre MARKET simple
         order = client.create_order(
@@ -582,7 +599,7 @@ def place_buy_order(entry_price, sl_price, tp_price, ema5, ema8, ema30, atr, cho
         return False, 0
 
 
-def place_sell_order(entry_price, sl_price, tp_price, ema5, ema8, ema30, atr, choch_bull=0, choch_bear=0, bos_a=0, choch_a=0, strategy_note="SELL - Strategy"):
+def place_sell_order(entry_price, sl_price, tp_price, ema5, ema8, ema30, atr, choch_bull=0, choch_bear=0, bos_a=0, choch_a=0, cloud_up=0, cloud_dw=0, strategy_note="SELL - Strategy"):
     """
     Place un ordre SELL simple
     Logger AVANT l'ordre pour capturer même les échecs
@@ -604,7 +621,7 @@ def place_sell_order(entry_price, sl_price, tp_price, ema5, ema8, ema30, atr, ch
         # LOGGER AVANT l'ordre (pour capturer même si échec)
         current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         add_trade_entry(current_time, "SELL", entry_price, sl_price, tp_price,
-                       float(quantity_str), ema5, ema8, ema30, atr, choch_bull, choch_bear, bos_a, choch_a, strategy_note)
+                       float(quantity_str), ema5, ema8, ema30, atr, choch_bull, choch_bear, bos_a, choch_a, cloud_up, cloud_dw, strategy_note)
 
         # Ordre MARKET simple
         order = client.create_order(
@@ -629,6 +646,7 @@ def ema_crossover(df):
     """
     Stratégie EMA crossover (indépendante)
     Génère signaux BUY/SELL sur croisement EMA 5/8
+    Avec filtre optionnel EMA Trend Cloud
     """
     last_candle = df.iloc[-1]
     prev_candle = df.iloc[-2]
@@ -639,9 +657,24 @@ def ema_crossover(df):
     atr = last_candle['ATR_14']
     entry_price = last_candle['close']
 
+    # EMA Trend Cloud status
+    ema_50 = last_candle.get('EMA_50', None)
+    ema_200 = last_candle.get('EMA_200', None)
+    cloud_up = 1 if (ema_50 is not None and ema_200 is not None and ema_50 > ema_200) else 0
+    cloud_dw = 1 if (ema_50 is not None and ema_200 is not None and ema_50 < ema_200) else 0
+
+    if ema_50 is not None and ema_200 is not None:
+        cloud_status = "☁️ CLOUD UP (Bullish)" if cloud_up else ("☁️ CLOUD DOWN (Bearish)" if cloud_dw else "☁️ CLOUD NEUTRAL")
+        print(f"   {cloud_status} | EMA50: {ema_50:.2f} | EMA200: {ema_200:.2f}")
+
     # Signal BUY
     if (last_candle['EMA_5'] > last_candle['EMA_8'] and
         prev_candle['EMA_5'] <= prev_candle['EMA_8']):
+
+        # Filtre EMA Trend Cloud
+        if ENABLE_EMA_TREND_CLOUD and cloud_up != 1:
+            print(f"\n🔵 EMA CROSSOVER BUY SIGNAL detected but BLOCKED by Cloud filter (cloud_up={cloud_up})")
+            return
 
         buy_sl = entry_price - atr
         stop_distance = entry_price - buy_sl
@@ -650,7 +683,7 @@ def ema_crossover(df):
         print(f"\n🔵 EMA CROSSOVER BUY SIGNAL!")
         print(f"   Entry: {entry_price:.2f} | SL: {buy_sl:.2f} | TP: {buy_tp:.2f}")
 
-        success, quantity = place_buy_order(entry_price, buy_sl, buy_tp, ema5, ema8, ema30, atr, 0, 0, 0, 0, "BUY - EMA Crossover 5/8")
+        success, quantity = place_buy_order(entry_price, buy_sl, buy_tp, ema5, ema8, ema30, atr, 0, 0, 0, 0, cloud_up, cloud_dw, "BUY - EMA Crossover 5/8")
 
         if success:
             print("✅ EMA Crossover trade executed")
@@ -661,6 +694,11 @@ def ema_crossover(df):
     elif (last_candle['EMA_5'] < last_candle['EMA_8'] and
           prev_candle['EMA_5'] >= prev_candle['EMA_8']):
 
+        # Filtre EMA Trend Cloud
+        if ENABLE_EMA_TREND_CLOUD and cloud_dw != 1:
+            print(f"\n🔴 EMA CROSSOVER SELL SIGNAL detected but BLOCKED by Cloud filter (cloud_dw={cloud_dw})")
+            return
+
         sell_sl = entry_price + atr
         stop_distance = sell_sl - entry_price
         sell_tp = entry_price - (stop_distance * TP_RATIO)
@@ -668,7 +706,7 @@ def ema_crossover(df):
         print(f"\n🔴 EMA CROSSOVER SELL SIGNAL!")
         print(f"   Entry: {entry_price:.2f} | SL: {sell_sl:.2f} | TP: {sell_tp:.2f}")
 
-        success, quantity = place_sell_order(entry_price, sell_sl, sell_tp, ema5, ema8, ema30, atr, 0, 0, 0, 0, "SELL - EMA Crossover 5/8")
+        success, quantity = place_sell_order(entry_price, sell_sl, sell_tp, ema5, ema8, ema30, atr, 0, 0, 0, 0, cloud_up, cloud_dw, "SELL - EMA Crossover 5/8")
 
         if success:
             print("✅ EMA Crossover trade executed")
@@ -685,6 +723,7 @@ def strategy_choch(df):
     Génère signaux sur BOS (Break of Structure) ET CHoCH (Change of Character)
     Avec détection de qualité supérieure (_A) selon méthode Trader DNA
     Utilise architecture double swing (structure principale + micro-structure)
+    Avec filtre optionnel EMA Trend Cloud
 
     BOS = Cassure dans le sens de la tendance (plus fréquent)
     CHoCH = Cassure contre la tendance (plus rare, signal plus fort)
@@ -698,6 +737,16 @@ def strategy_choch(df):
     atr = last_candle.get('ATR_14', last_candle['high'] - last_candle['low'])
     entry_price = last_candle['close']
 
+    # EMA Trend Cloud status
+    ema_50 = last_candle.get('EMA_50', None)
+    ema_200 = last_candle.get('EMA_200', None)
+    cloud_up = 1 if (ema_50 is not None and ema_200 is not None and ema_50 > ema_200) else 0
+    cloud_dw = 1 if (ema_50 is not None and ema_200 is not None and ema_50 < ema_200) else 0
+
+    if ema_50 is not None and ema_200 is not None:
+        cloud_status = "☁️ CLOUD UP (Bullish)" if cloud_up else ("☁️ CLOUD DOWN (Bearish)" if cloud_dw else "☁️ CLOUD NEUTRAL")
+        print(f"   {cloud_status} | EMA50: {ema_50:.2f} | EMA200: {ema_200:.2f}")
+
     # Détecter BOS/CHoCH avec validation EMA 30 (double swing)
     bull_distance, bear_distance, is_choch_bull, is_choch_bear, is_quality_bull, is_quality_bear = detect_choch(
         df, CHOCH_SWING_SIZE, CHOCH_MICRO_SWING, CHOCH_SEARCH_WINDOW, CHOCH_CONF_TYPE
@@ -705,6 +754,12 @@ def strategy_choch(df):
 
     # Signal BUY si cassure bullish détectée (BOS ou CHoCH)
     if bull_distance > 0:
+        # Filtre EMA Trend Cloud
+        if ENABLE_EMA_TREND_CLOUD and cloud_up != 1:
+            signal_type = "CHoCH" if is_choch_bull else "BOS"
+            print(f"\n🔵 {signal_type} BULLISH SIGNAL detected but BLOCKED by Cloud filter (cloud_up={cloud_up})")
+            return
+
         buy_sl = entry_price - atr
         stop_distance = entry_price - buy_sl
         buy_tp = entry_price + (stop_distance * TP_RATIO)
@@ -722,7 +777,8 @@ def strategy_choch(df):
         choch_a = 1 if (is_choch_bull and is_quality_bull) else 0
 
         # Créer la note pour le CSV
-        strategy_note = f"BUY - {signal_type}{quality_suffix} Bullish (swing={CHOCH_SWING_SIZE}, micro={CHOCH_MICRO_SWING})"
+        cloud_note = " [CLOUD UP]" if cloud_up else (" [CLOUD DW]" if cloud_dw else "")
+        strategy_note = f"BUY - {signal_type}{quality_suffix} Bullish (swing={CHOCH_SWING_SIZE}, micro={CHOCH_MICRO_SWING}){cloud_note}"
 
         print(f"\n🔵 {emoji} {signal_type}{quality_suffix} BULLISH SIGNAL!")
         print(f"   Type: {'Change of Character' if is_choch_bull else 'Break of Structure'}{quality_label}")
@@ -733,7 +789,7 @@ def strategy_choch(df):
         print(f"   Entry: {entry_price:.2f} | SL: {buy_sl:.2f} | TP: {buy_tp:.2f}")
 
         success, quantity = place_buy_order(entry_price, buy_sl, buy_tp, ema5, ema8, ema30, atr,
-                                            bull_distance, 0, bos_a, choch_a, strategy_note)
+                                            bull_distance, 0, bos_a, choch_a, cloud_up, cloud_dw, strategy_note)
 
         if success:
             print(f"✅ {signal_type}{quality_suffix} Bullish trade executed")
@@ -742,6 +798,12 @@ def strategy_choch(df):
 
     # Signal SELL si cassure bearish détectée (BOS ou CHoCH)
     elif bear_distance > 0:
+        # Filtre EMA Trend Cloud
+        if ENABLE_EMA_TREND_CLOUD and cloud_dw != 1:
+            signal_type = "CHoCH" if is_choch_bear else "BOS"
+            print(f"\n🔴 {signal_type} BEARISH SIGNAL detected but BLOCKED by Cloud filter (cloud_dw={cloud_dw})")
+            return
+
         sell_sl = entry_price + atr
         stop_distance = sell_sl - entry_price
         sell_tp = entry_price - (stop_distance * TP_RATIO)
@@ -759,7 +821,8 @@ def strategy_choch(df):
         choch_a = 1 if (is_choch_bear and is_quality_bear) else 0
 
         # Créer la note pour le CSV
-        strategy_note = f"SELL - {signal_type}{quality_suffix} Bearish (swing={CHOCH_SWING_SIZE}, micro={CHOCH_MICRO_SWING})"
+        cloud_note = " [CLOUD UP]" if cloud_up else (" [CLOUD DW]" if cloud_dw else "")
+        strategy_note = f"SELL - {signal_type}{quality_suffix} Bearish (swing={CHOCH_SWING_SIZE}, micro={CHOCH_MICRO_SWING}){cloud_note}"
 
         print(f"\n🔴 {emoji} {signal_type}{quality_suffix} BEARISH SIGNAL!")
         print(f"   Type: {'Change of Character' if is_choch_bear else 'Break of Structure'}{quality_label}")
@@ -770,7 +833,7 @@ def strategy_choch(df):
         print(f"   Entry: {entry_price:.2f} | SL: {sell_sl:.2f} | TP: {sell_tp:.2f}")
 
         success, quantity = place_sell_order(entry_price, sell_sl, sell_tp, ema5, ema8, ema30, atr,
-                                             0, bear_distance, bos_a, choch_a, strategy_note)
+                                             0, bear_distance, bos_a, choch_a, cloud_up, cloud_dw, strategy_note)
 
         if success:
             print(f"✅ {signal_type}{quality_suffix} Bearish trade executed")
@@ -804,6 +867,8 @@ def run_bot():
     if ENABLE_CHOCH:
         strategies.append(f"CHoCH (swing={CHOCH_SWING_SIZE})")
     print(" + ".join(strategies) if strategies else "None")
+    cloud_status = "ON" if ENABLE_EMA_TREND_CLOUD else "OFF"
+    print(f"EMA Trend Cloud Filter: {cloud_status} (EMA {EMA_TREND_FAST}/{EMA_TREND_MEDIUM}/{EMA_TREND_SLOW})")
     print(f"Check interval IN position: {CHECK_INTERVAL_IN_POSITION}s")
     print(f"Check interval NO position: {CHECK_INTERVAL_NO_POSITION}s")
     print("=" * 60)
